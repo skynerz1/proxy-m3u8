@@ -44,6 +44,10 @@ func main() {
 
 	e.GET("/m3u8-proxy", handler.M3U8Proxy)
 
+	e.GET("/health", func(c echo.Context) error {
+		return c.String(200, "OK")
+	})
+
 	port, exists := os.LookupEnv("PORT")
 	if !exists {
 		port = "4040"
