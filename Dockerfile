@@ -17,6 +17,12 @@ FROM alpine:latest
 
 WORKDIR /app
 
+LABEL org.opencontainers.image.title="Proxy M3U8" \
+  org.opencontainers.image.description="Proxy server for M3U8" \
+  org.opencontainers.image.maintainer="dovakiin0@kitsunee.online" \
+  org.opencontainers.image.source="https://github.com/dovakiin0/proxy-m3u8.git" \
+  org.opencontainers.image.vendor="kitsunee.online"
+
 RUN apk --no-cache add ca-certificates tzdata
 
 COPY --from=builder /app/server /app/server
