@@ -4,9 +4,17 @@ A simple proxy server for M3U8 file written in go for high performance
 
 ### Running the server
 
+Redis is optional but can be used to cache the proxied data.
+
 copy the `.env.example` file to `.env`  
-it takes two env  
-PORT and CORS_DOMAIN  
+
+| NAME | DESCRIPTION | DEFAULT | Required |
+|---|---|---|---|
+|PORT|Port on which the server will run|4040|No|
+|CORS_DOMAIN|Domains that are allowed for cors|*|No|
+|REDIS_URL|Redis url||No|
+|REDIS_PASSWORD|Password for redis||No|
+
 add multiple domain separated by comma (,)
 
 `go run cmd/main.go`
