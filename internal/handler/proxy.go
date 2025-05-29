@@ -40,10 +40,9 @@ func M3U8Proxy(c echo.Context) error {
 		return c.String(http.StatusBadRequest, "Invalid 'url' query parameter")
 	}
 	isM3U8 := strings.HasSuffix(strings.ToLower(targetURL), ".m3u8")
-	isTS := strings.HasSuffix(strings.ToLower(targetURL), ".ts") // .ts segments are also M3U8 content essentially
-	isOtherStatic := isStaticFileExtension(targetURL)            // Checks .png, .jpg etc. from utils.AllowedExtensions
+	isTS := strings.HasSuffix(strings.ToLower(targetURL), ".ts")
+	isOtherStatic := isStaticFileExtension(targetURL)
 
-	// Create a new HTTP request to the target URL
 	req, err := http.NewRequest("GET", targetURL, nil)
 	if err != nil {
 		log.Printf("Error creating request to target %s: %v", targetURL, err)
@@ -51,10 +50,12 @@ func M3U8Proxy(c echo.Context) error {
 	}
 
 	req.Header.Set("Accept", "*/*")
+	// if the referer is provided, set it in the request headers
 	if refererHeader != "" {
 		req.Header.Set("Referer", refererHeader)
 		req.Header.Set("Origin", refererHeader)
 	} else {
+		// use the default referer if not provided, for gogo and hianime, this is normally provided
 		req.Header.Set("Origin", "https://megacloud.blog/")
 		req.Header.Set("Referer", "https://megacloud.blog/")
 	}
@@ -91,7 +92,7 @@ func M3U8Proxy(c echo.Context) error {
 		// Content will be transformed, so original Content-Length is invalid.
 		// Streaming responses with HTTP/1.1 will use chunked transfer encoding if Content-Length is not set.
 		// For HTTP/2, length is less critical.
-		// c.Response().Header().Del("Content-Length") // Not strictly needed if we stream correctly
+		c.Response().Header().Del("Content-Length")
 	} else if contentLength := upstreamResp.Header.Get("Content-Length"); contentLength != "" && isOtherStatic {
 		c.Response().Header().Set("Content-Length", contentLength)
 	}
@@ -131,7 +132,7 @@ func M3U8Proxy(c echo.Context) error {
 		log.Printf("Error processing M3U8 stream for %s: %v", targetURL, err)
 		// Don't try to write another error response if headers already sent
 		// The error will be in the server logs.
-		return nil // Error is handled by ProcessM3U8Stream logging or by io.Copy error
+		return nil
 	}
 
 	return nil

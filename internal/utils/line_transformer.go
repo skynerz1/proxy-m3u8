@@ -43,7 +43,7 @@ func ProcessM3U8Stream(reader io.Reader, writer io.Writer, originalM3U8URL, prox
 		if !strings.HasSuffix(parsedBaseURL.Path, "/") {
 			parsedBaseURL.Path += "/"
 		}
-		baseUrlForRelativePaths = parsedBaseURL.String() // This will be like http://example.com/path/
+		baseUrlForRelativePaths = parsedBaseURL.String()
 	}
 
 	for scanner.Scan() {
@@ -66,20 +66,10 @@ func ProcessM3U8Stream(reader io.Reader, writer io.Writer, originalM3U8URL, prox
 				modifiedLine = proxyPrefix + url.QueryEscape(absoluteSegmentURL)
 			}
 		} else if IsAllowedStaticExtension(trimmedLine) {
-			// These seem to be treated as potentially absolute or different paths in your JS.
-			// The JS logic was `m3u8-proxy?url=${line}` which implies `line` itself is a full or usable relative path.
-			// If `trimmedLine` is already an absolute URL, use it directly.
-			// If it's a relative path, this behavior is a bit ambiguous without more context
-			// on how these paths are structured. Assuming they are relative to some known base or are absolute.
-			// For consistency with your JS `m3u8-proxy?url=${line}`, we'll assume `line` is directly usable.
-			// If `line` could be relative and need `baseUrlForRelativePaths`, this part would need adjustment.
 			if isAbsoluteURL(trimmedLine) {
 				modifiedLine = proxyPrefix + url.QueryEscape(trimmedLine)
 			} else {
-				// If it's a relative path that should be resolved against the M3U8's base
-				// use: absoluteResourceURL := resolveURL(baseUrlForRelativePaths, trimmedLine)
-				// For now, matching JS:
-				absoluteResourceURL := resolveURL(baseUrlForRelativePaths, trimmedLine) // Or just trimmedLine if it's always absolute
+				absoluteResourceURL := resolveURL(baseUrlForRelativePaths, trimmedLine)
 				modifiedLine = proxyPrefix + url.QueryEscape(absoluteResourceURL)
 			}
 		}
@@ -105,14 +95,13 @@ func resolveURL(baseURLStr, relativePath string) string {
 
 	base, err := url.Parse(baseURLStr)
 	if err != nil {
-		return relativePath // Fallback to relativePath if base is invalid
+		return relativePath
 	}
 
 	relative, err := url.Parse(relativePath)
 	if err != nil {
-		return relativePath // Fallback if relativePath itself is invalid
+		return relativePath
 	}
 
 	return base.ResolveReference(relative).String()
 }
-
