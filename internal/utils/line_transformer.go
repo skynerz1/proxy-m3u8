@@ -23,6 +23,16 @@ func IsAllowedStaticExtension(line string) bool {
 	return false
 }
 
+func IsStaticFileExtension(path string) bool {
+	lowerPath := strings.ToLower(path)
+	for _, ext := range AllowedExtensions {
+		if strings.HasSuffix(lowerPath, ext) {
+			return true
+		}
+	}
+	return false
+}
+
 // ProcessM3U8Stream reads an M3U8 stream, transforms relevant lines, and writes to the output stream.
 // proxyPrefix is the prefix for rewritten URLs, e.g., "m3u8-proxy?url="
 func ProcessM3U8Stream(reader io.Reader, writer io.Writer, originalM3U8URL, proxyPrefix string) error {

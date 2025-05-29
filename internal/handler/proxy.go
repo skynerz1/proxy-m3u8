@@ -1,47 +1,112 @@
 package handler
 
 import (
+	"bytes"
+	"encoding/json"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
+	"github.com/dovakiin0/proxy-m3u8/config"
 	"github.com/dovakiin0/proxy-m3u8/internal/utils"
 	"github.com/labstack/echo/v4"
+	"github.com/redis/go-redis/v9"
 )
 
-func isStaticFileExtension(path string) bool {
-	lowerPath := strings.ToLower(path)
-	for _, ext := range utils.AllowedExtensions {
-		if strings.HasSuffix(lowerPath, ext) {
-			return true
-		}
-	}
-	return false
+// Redis client for caching responses
+var (
+	ctx = config.Ctx
+)
+
+// CachedResponse represents a cached response structure
+type CachedResponse struct {
+	StatusCode int         `json:"status_code"`
+	Headers    http.Header `json:"headers"`
+	Body       []byte      `json:"body"`
 }
 
-func M3U8Proxy(c echo.Context) error {
+const cacheTTL = 1 * time.Hour // Cache expiration time
+
+// generateCacheKey creates a unique cache key based on the target URL and header parameters
+func generateCacheKey(targetURL string) string {
+	return "m3u8proxy_cache:" + targetURL
+}
+
+func M3U8ProxyHandler(c echo.Context) error {
+	if config.Client == nil {
+		log.Println("Redis client is not initialized. Cache will be ignored.")
+	}
+
+	/*
+		########################################################################################
+		#              Get the target URL and referer from query parameters
+		########################################################################################
+	*/
 	targetURL := c.QueryParam("url")
 	if targetURL == "" {
 		return c.String(http.StatusBadRequest, "Missing 'url' query parameter")
 	}
 
 	referer := c.QueryParam("referer")
-	refererHeader, err := url.QueryUnescape(referer)
-	if err != nil {
-		log.Printf("Error unescaping referer: %v", err)
-		return c.String(http.StatusBadRequest, "Invalid 'referer' query parameter")
+	var refererHeader string
+	if referer == "" {
+		unscaped, err := url.QueryUnescape(referer)
+		if err != nil {
+			log.Printf("Error unescaping referer: %v", err)
+			return c.String(http.StatusBadRequest, "Invalid 'referer' query parameter")
+		}
+		refererHeader = unscaped
 	}
 
-	_, err = url.ParseRequestURI(targetURL)
+	/*
+		########################################################################################
+		#                          Check cache for existing response
+		########################################################################################
+	*/
+	// if cache exists, we will use it
+	cacheKey := generateCacheKey(targetURL)
+	var cachedData CachedResponse
+
+	if config.Client != nil {
+		val, err := config.Client.Get(ctx, cacheKey).Result()
+		if err == nil { // Cache hit
+			err = json.Unmarshal([]byte(val), &cachedData)
+			if err == nil {
+				log.Printf("CACHE HIT for %s", targetURL)
+				// Apply cached headers
+				for key, values := range cachedData.Headers {
+					for _, value := range values {
+						c.Response().Header().Add(key, value)
+					}
+				}
+				c.Response().WriteHeader(cachedData.StatusCode)
+				_, err = c.Response().Writer.Write(cachedData.Body)
+				if err != nil {
+					log.Printf("Error writing cached response body for %s: %v", targetURL, err)
+				}
+				return nil // Served from cache
+			}
+			log.Printf("Error unmarshalling cached data for %s: %v. Fetching from origin.", targetURL, err)
+			// Proceed to fetch from origin if unmarshal fails
+		} else if err != redis.Nil {
+			log.Printf("Redis GET error for key %s: %v. Fetching from origin.", cacheKey, err)
+			// Proceed to fetch from origin on other Redis errors
+		} else {
+			log.Printf("CACHE MISS for %s", targetURL)
+		}
+	}
+
+	_, err := url.ParseRequestURI(targetURL)
 	if err != nil {
 		log.Printf("Invalid target URL: %s, error: %v", targetURL, err)
 		return c.String(http.StatusBadRequest, "Invalid 'url' query parameter")
 	}
 	isM3U8 := strings.HasSuffix(strings.ToLower(targetURL), ".m3u8")
 	isTS := strings.HasSuffix(strings.ToLower(targetURL), ".ts")
-	isOtherStatic := isStaticFileExtension(targetURL)
+	isOtherStatic := utils.IsStaticFileExtension(targetURL)
 
 	req, err := http.NewRequest("GET", targetURL, nil)
 	if err != nil {
@@ -71,6 +136,15 @@ func M3U8Proxy(c echo.Context) error {
 	}
 	defer upstreamResp.Body.Close()
 
+	rawBodyBytes, err := io.ReadAll(upstreamResp.Body)
+	if err != nil {
+		log.Printf("Error reading response body from upstream %s: %v", targetURL, err)
+		return c.String(http.StatusInternalServerError, "Failed to read response from upstream server")
+	}
+
+	var responseBodyBytes []byte
+	responseHeadersToClient := http.Header{}
+
 	// Whitelist headers to copy
 	headerWhitelist := []string{
 		"Content-Type", "Content-Disposition", "Accept-Ranges", "Content-Range",
@@ -81,58 +155,81 @@ func M3U8Proxy(c echo.Context) error {
 
 	for _, hName := range headerWhitelist {
 		if hVal := upstreamResp.Header.Get(hName); hVal != "" {
-			c.Response().Header().Set(hName, hVal)
+			// Add the header to the response headers to be sent to the client
+			responseHeadersToClient.Set(hName, hVal)
 		}
 	}
 
-	// Special handling for Content-Length based on your Node.js logic
-	// If we are transforming the content (M3U8/TS), the length will change, so remove it.
-	// For direct pipe (isOtherStatic), Content-Length from upstream is fine.
-	if isM3U8 || isTS {
-		// Content will be transformed, so original Content-Length is invalid.
-		// Streaming responses with HTTP/1.1 will use chunked transfer encoding if Content-Length is not set.
-		// For HTTP/2, length is less critical.
-		c.Response().Header().Del("Content-Length")
-	} else if contentLength := upstreamResp.Header.Get("Content-Length"); contentLength != "" && isOtherStatic {
-		c.Response().Header().Set("Content-Length", contentLength)
+	if (isM3U8 || isTS) && upstreamResp.StatusCode == http.StatusOK {
+		var transformedBodyBuffer bytes.Buffer
+		proxyRoutePath := c.Path()
+		if strings.HasPrefix(proxyRoutePath, "/") {
+			proxyRoutePath = strings.TrimPrefix(proxyRoutePath, "/")
+		}
+		urlPrefix := proxyRoutePath + "?url="
+
+		// IMPORTANT: Adapt utils.ProcessM3U8Stream:
+		// 1. Input: io.Reader (bytes.NewReader(rawBodyBytes))
+		// 2. Output: io.Writer (&transformedBodyBuffer)
+		// 3. Parameter for referer propagation (e.g., rawRefererQueryParam or refererHeader)
+		// Example call assuming ProcessM3U8Stream takes rawRefererQueryParam for propagation:
+		err = utils.ProcessM3U8Stream(bytes.NewReader(rawBodyBytes), &transformedBodyBuffer, targetURL, urlPrefix)
+		if err != nil {
+			log.Printf("Error processing M3U8 stream for %s: %v", targetURL, err)
+			return c.String(http.StatusInternalServerError, "Error transforming M3U8 content")
+		}
+		responseBodyBytes = transformedBodyBuffer.Bytes()
+		// Content-Length is not set from upstream as body is transformed
+	} else {
+		// No transformation or non-OK status
+		responseBodyBytes = rawBodyBytes
+		// Set Content-Length from upstream if it's a static file or non-OK response and CL is present
+		if (isOtherStatic || upstreamResp.StatusCode != http.StatusOK) && upstreamResp.Header.Get("Content-Length") != "" {
+			responseHeadersToClient.Set("Content-Length", upstreamResp.Header.Get("Content-Length"))
+		}
+	}
+
+	// Prepare bodyToServe for sending to client
+	bodyToServe := bytes.NewReader(responseBodyBytes)
+	for key, values := range responseHeadersToClient {
+		for _, value := range values {
+			c.Response().Header().Set(key, value)
+		}
 	}
 
 	c.Response().WriteHeader(upstreamResp.StatusCode)
 
-	// If it's a "static file" (not m3u8 or ts that needs line transformation)
-	// or if the upstream response indicates an error, just pipe it.
-	if upstreamResp.StatusCode != http.StatusOK {
-		log.Printf("Upstream server for %s returned status %d", targetURL, upstreamResp.StatusCode)
-		_, err = io.Copy(c.Response().Writer, upstreamResp.Body)
-		if err != nil {
-			log.Printf("Error piping non-OK response for %s: %v", targetURL, err)
-			// c.Response() has already been written to, so we can't easily send a different error here.
-			// The error will be in the server logs.
-		}
-		return nil // Status and headers already set
-	}
-
-	if isOtherStatic { // .png, .jpg etc. (already checked for status OK)
-		_, err = io.Copy(c.Response().Writer, upstreamResp.Body)
-		if err != nil {
-			log.Printf("Error piping static file %s: %v", targetURL, err)
-			// Connection might be closed by client
-		}
-		return nil
-	}
-
-	proxyRoutePath := c.Path()
-	if strings.HasPrefix(proxyRoutePath, "/") {
-		proxyRoutePath = strings.TrimPrefix(proxyRoutePath, "/")
-	}
-	urlPrefix := proxyRoutePath + "?url="
-
-	err = utils.ProcessM3U8Stream(upstreamResp.Body, c.Response().Writer, targetURL, urlPrefix)
+	_, err = io.Copy(c.Response().Writer, bodyToServe)
 	if err != nil {
-		log.Printf("Error processing M3U8 stream for %s: %v", targetURL, err)
-		// Don't try to write another error response if headers already sent
-		// The error will be in the server logs.
-		return nil
+		log.Printf("Error writing response body to client for %s: %v", targetURL, err)
+	}
+
+	/*
+		########################################################################################
+		#                          Cache the response if Redis is available
+		########################################################################################
+	*/
+	if config.Client != nil && (upstreamResp.StatusCode == http.StatusOK || upstreamResp.StatusCode == http.StatusPartialContent) {
+		// We need to cache the headers that we sent to the client.
+		// So, use c.Response().Header() (after they've been set, but before body is fully written).
+		// Or more reliably, use the `responseHeadersToClient` we constructed.
+
+		cacheEntry := CachedResponse{
+			StatusCode: upstreamResp.StatusCode,
+			Headers:    responseHeadersToClient, // Use the headers we decided to send
+			Body:       responseBodyBytes,       // This is the (potentially transformed) body
+		}
+		jsonData, err := json.Marshal(cacheEntry)
+		if err != nil {
+			log.Printf("Error marshalling data for Redis cache for %s: %v", targetURL, err)
+		} else {
+			err = config.Client.Set(ctx, cacheKey, jsonData, cacheTTL).Err()
+			if err != nil {
+				log.Printf("Redis SET error for key %s: %v", cacheKey, err)
+			} else {
+				log.Printf("CACHED %s (key: %s)", targetURL, cacheKey)
+			}
+		}
 	}
 
 	return nil
