@@ -70,7 +70,7 @@ func M3U8ProxyHandler(c echo.Context) error {
 	cacheKey := generateCacheKey(targetURL)
 	var cachedData CachedResponse
 
-	if config.Client != nil {
+	if config.IsAvailable {
 		val, err := config.Client.Get(ctx, cacheKey).Result()
 		if err == nil { // Cache hit
 			err = json.Unmarshal([]byte(val), &cachedData)
@@ -168,11 +168,6 @@ func M3U8ProxyHandler(c echo.Context) error {
 		}
 		urlPrefix := proxyRoutePath + "?url="
 
-		// IMPORTANT: Adapt utils.ProcessM3U8Stream:
-		// 1. Input: io.Reader (bytes.NewReader(rawBodyBytes))
-		// 2. Output: io.Writer (&transformedBodyBuffer)
-		// 3. Parameter for referer propagation (e.g., rawRefererQueryParam or refererHeader)
-		// Example call assuming ProcessM3U8Stream takes rawRefererQueryParam for propagation:
 		err = utils.ProcessM3U8Stream(bytes.NewReader(rawBodyBytes), &transformedBodyBuffer, targetURL, urlPrefix)
 		if err != nil {
 			log.Printf("Error processing M3U8 stream for %s: %v", targetURL, err)
@@ -209,7 +204,7 @@ func M3U8ProxyHandler(c echo.Context) error {
 		#                          Cache the response if Redis is available
 		########################################################################################
 	*/
-	if config.Client != nil && (upstreamResp.StatusCode == http.StatusOK || upstreamResp.StatusCode == http.StatusPartialContent) {
+	if config.IsAvailable && (upstreamResp.StatusCode == http.StatusOK || upstreamResp.StatusCode == http.StatusPartialContent) {
 		// We need to cache the headers that we sent to the client.
 		// So, use c.Response().Header() (after they've been set, but before body is fully written).
 		// Or more reliably, use the `responseHeadersToClient` we constructed.
