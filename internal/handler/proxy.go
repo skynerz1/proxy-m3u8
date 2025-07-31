@@ -52,7 +52,7 @@ func M3U8ProxyHandler(c echo.Context) error {
 
 	referer := c.QueryParam("referer")
 	var refererHeader string
-	if referer == "" {
+	if referer != "" {
 		unscaped, err := url.QueryUnescape(referer)
 		if err != nil {
 			log.Printf("Error unescaping referer: %v", err)
@@ -121,8 +121,8 @@ func M3U8ProxyHandler(c echo.Context) error {
 		req.Header.Set("Origin", refererHeader)
 	} else {
 		// use the default referer if not provided, for gogo and hianime, this is normally provided
-		req.Header.Set("Origin", "https://megacloud.blog/")
-		req.Header.Set("Referer", "https://megacloud.blog/")
+		req.Header.Set("Origin", "https://megaplay.buzz/")
+		req.Header.Set("Referer", "https://megaplay.buzz/")
 	}
 
 	upstreamResp, err := utils.ProxyHTTPClient.Do(req)
