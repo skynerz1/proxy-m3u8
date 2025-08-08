@@ -114,16 +114,22 @@ func M3U8ProxyHandler(c echo.Context) error {
 		return c.String(http.StatusInternalServerError, "Failed to create request to target server")
 	}
 
-	req.Header.Set("Accept", "*/*")
-	// if the referer is provided, set it in the request headers
-	if refererHeader != "" {
-		req.Header.Set("Referer", refererHeader)
-		req.Header.Set("Origin", refererHeader)
-	} else {
-		// use the default referer if not provided, for gogo and hianime, this is normally provided
-		req.Header.Set("Origin", "https://megaplay.buzz/")
-		req.Header.Set("Referer", "https://megaplay.buzz/")
-	}
+req.Header.Set("Accept", "*/*")
+
+// أضف هذا السطر لنسخ هيدر User-Agent من طلب المستخدم (لو موجود)
+userAgent := c.Request().Header.Get("User-Agent")
+if userAgent != "" {
+    req.Header.Set("User-Agent", userAgent)
+}
+
+if refererHeader != "" {
+    req.Header.Set("Referer", refererHeader)
+    req.Header.Set("Origin", refererHeader)
+} else {
+    req.Header.Set("Origin", "https://megaplay.buzz/")
+    req.Header.Set("Referer", "https://megaplay.buzz/")
+}
+
 
 	upstreamResp, err := utils.ProxyHTTPClient.Do(req)
 	if err != nil {
