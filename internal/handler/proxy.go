@@ -126,9 +126,16 @@ if refererHeader != "" {
     req.Header.Set("Referer", refererHeader)
     req.Header.Set("Origin", refererHeader)
 } else {
-    req.Header.Set("Origin", "https://megaplay.buzz/")
-    req.Header.Set("Referer", "https://megaplay.buzz/")
+    // لو الرابط الأساسي يحتوي دومين shd-gcp-live.edgenextcdn.net نستخدم دومين خاص
+    if strings.Contains(targetURL, "shd-gcp-live.edgenextcdn.net") {
+        req.Header.Set("Origin", "https://shd-gcp-live.edgenextcdn.net/")
+        req.Header.Set("Referer", "https://shd-gcp-live.edgenextcdn.net/")
+    } else {
+        req.Header.Set("Origin", "https://megaplay.buzz/")
+        req.Header.Set("Referer", "https://megaplay.buzz/")
+    }
 }
+
 
 
 	upstreamResp, err := utils.ProxyHTTPClient.Do(req)
